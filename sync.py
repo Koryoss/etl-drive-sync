@@ -59,6 +59,8 @@ class CanvasClient:
                       f"응답={r.text[:200]!r}")
                 if r.status_code in (401, 403) and "rate" not in r.text.lower():
                     r.raise_for_status()  # 인증/권한 문제는 재시도하지 않음
+                if r.status_code in (400, 404):
+                    r.raise_for_status()  # 없는 리소스/기능 꺼짐은 재시도해도 같음
             if attempt < self.cfg["max_retries"]:
                 time.sleep(2 ** attempt)
         raise RuntimeError(f"요청 실패: {url}")
@@ -148,7 +150,12 @@ def page_files(canvas, course_id, state):
     """페이지 본문에 링크로 올라온 파일을 찾습니다(수정된 페이지만 본문을 조회)."""
     pages = canvas.paginate(f"/courses/{course_id}/pages",
                             {"sort": "updated_at", "order": "desc"})
-    for pg in pages:
+    try:
+        first = next(pages, None)
+    except requests.HTTPError as e:
+        print(f"  페이지 조회 불가 (HTTP {e.response.status_code}), 건너뜀")
+        return
+    for pg in itertools.chain([first] if first else [], pages):
         pkey = f"page:{course_id}:{pg['page_id']}"
         if state.get(pkey) == pg["updated_at"]:
             break  # 최신순이라 이미 본 페이지부터는 모두 처리됨
@@ -255,6 +262,8 @@ def main():
                     print(f"  + {f['display_name']}")
             except requests.HTTPError as e:
                 print(f"  건너뜀 (HTTP {e.response.status_code})")
+            except RuntimeError as e:
+                print(f"  건너뜀 ({e})")
     except BudgetExceeded as e:
         print(f"중단: {e} (다음 실행에서 이어서 진행)")
     finally:
