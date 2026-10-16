@@ -6,8 +6,10 @@
 - 성적/제출물/메시지는 호출하지 않습니다. 과목과 파일 목록만 조회합니다.
 """
 import io
+import itertools
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -139,6 +141,52 @@ def sanitize(name):
     return "".join("_" if c in '\\/:*?"<>|' else c for c in name).strip() or "untitled"
 
 
+FILE_LINK = re.compile(r"/files/(\d+)")
+
+
+def page_files(canvas, course_id, state):
+    """페이지 본문에 링크로 올라온 파일을 찾습니다(수정된 페이지만 본문을 조회)."""
+    pages = canvas.paginate(f"/courses/{course_id}/pages",
+                            {"sort": "updated_at", "order": "desc"})
+    for pg in pages:
+        pkey = f"page:{course_id}:{pg['page_id']}"
+        if state.get(pkey) == pg["updated_at"]:
+            break  # 최신순이라 이미 본 페이지부터는 모두 처리됨
+        try:
+            body = canvas._request(
+                f"{canvas.base}/api/v1/courses/{course_id}/pages/{pg['url']}").json().get("body") or ""
+        except requests.HTTPError as e:
+            print(f"  페이지 건너뜀 {pg['url']} (HTTP {e.response.status_code})")
+            continue
+        for fid in dict.fromkeys(FILE_LINK.findall(body)):
+            if fid in state:
+                continue
+            try:
+                yield canvas._request(f"{canvas.base}/api/v1/courses/{course_id}/files/{fid}").json()
+            except requests.HTTPError as e:
+                print(f"  페이지 속 파일 건너뜀 {fid} (HTTP {e.response.status_code})")
+        state[pkey] = pg["updated_at"]  # 이 페이지의 파일을 모두 처리한 뒤에만 기록
+
+
+def module_files(canvas, course_id, state):
+    """파일 탭이 막힌 과목용 대체 경로: 모듈에 걸린 파일을 하나씩 조회합니다.
+    이미 받은 파일 ID는 호출 없이 건너뜁니다(모듈 방식은 수정 여부를 알 수 없음)."""
+    seen = set()
+    for m in canvas.paginate(f"/courses/{course_id}/modules", {"include[]": "items"}):
+        for it in m.get("items") or []:
+            fid = it.get("content_id")
+            if it.get("type") != "File" or not fid or fid in seen:
+                continue
+            seen.add(fid)
+            if str(fid) in state:
+                continue
+            try:
+                yield canvas._request(f"{canvas.base}/api/v1/courses/{course_id}/files/{fid}").json()
+            except requests.HTTPError as e:
+                print(f"  모듈 파일 건너뜀 {fid} (HTTP {e.response.status_code})")
+    yield from page_files(canvas, course_id, state)
+
+
 def main():
     cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     canvas = CanvasClient(os.environ["CANVAS_BASE_URL"], os.environ["CANVAS_TOKEN"], cfg)
@@ -168,18 +216,34 @@ def main():
         for course in courses:
             cname = sanitize(course["name"])
             print(f"[{cname}]")
+            files = canvas.paginate(
+                f"/courses/{course['id']}/files", {"sort": "updated_at", "order": "desc"})
             try:
-                files = canvas.paginate(
-                    f"/courses/{course['id']}/files", {"sort": "updated_at", "order": "desc"})
+                try:
+                    first = next(files, None)
+                    listing = [first] if first else []
+                except requests.HTTPError as e:
+                    if e.response.status_code not in (401, 403):
+                        raise
+                    print("  파일 탭 접근 불가 -> 모듈·페이지에서 파일 조회")
+                    files, listing = module_files(canvas, course["id"], state), []
+                    via_modules = True
+                else:
+                    via_modules = False
+                    files = itertools.chain(listing, files)
                 for f in files:
                     key = str(f["id"])
                     updated = f["updated_at"]
                     if state.get(key) == updated:
+                        if via_modules:
+                            continue
                         break  # 최신순 정렬이라 이미 본 항목이 나오면 나머지도 이미 처리됨
                     ext = f["display_name"].rsplit(".", 1)[-1].lower() if "." in f["display_name"] else ""
                     if ext not in allowed or f.get("size", 0) > max_bytes:
                         continue
                     if cutoff and datetime.fromisoformat(updated.replace("Z", "+00:00")) < cutoff:
+                        if via_modules:
+                            continue
                         break
                     if uploaded >= max_files:
                         raise BudgetExceeded(f"파일 상한({max_files}) 도달")
@@ -190,7 +254,6 @@ def main():
                     uploaded += 1
                     print(f"  + {f['display_name']}")
             except requests.HTTPError as e:
-                # 파일 탭을 숨긴 과목은 403/401이 나올 수 있어 건너뜀
                 print(f"  건너뜀 (HTTP {e.response.status_code})")
     except BudgetExceeded as e:
         print(f"중단: {e} (다음 실행에서 이어서 진행)")
