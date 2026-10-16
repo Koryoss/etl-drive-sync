@@ -53,6 +53,8 @@ class CanvasClient:
                     raise BudgetExceeded(f"남은 호출 한도 낮음({remaining}), 중단")
                 if r.status_code == 200:
                     return r
+                print(f"  HTTP {r.status_code} (시도 {attempt + 1}) url={r.url} "
+                      f"응답={r.text[:200]!r}")
                 if r.status_code in (401, 403) and "rate" not in r.text.lower():
                     r.raise_for_status()  # 인증/권한 문제는 재시도하지 않음
             if attempt < self.cfg["max_retries"]:
@@ -84,8 +86,19 @@ class Drive:
             scopes=["https://www.googleapis.com/auth/drive.file"],
         )
         self.svc = build("drive", "v3", credentials=creds, cache_discovery=False)
-        self.root = root_id
         self._folders = {}
+        self.root = root_id or self._ensure_root()
+
+    def _ensure_root(self):
+        # drive.file 범위에서는 앱이 직접 만든 폴더만 보이므로, 루트 폴더를 앱이 만들어 쓴다.
+        name = "eTL 강의자료"
+        q = (f"name='{name}' and 'root' in parents and "
+             "mimeType='application/vnd.google-apps.folder' and trashed=false")
+        res = self.svc.files().list(q=q, fields="files(id)").execute().get("files", [])
+        if res:
+            return res[0]["id"]
+        meta = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+        return self.svc.files().create(body=meta, fields="id").execute()["id"]
 
     def folder(self, name):
         if name in self._folders:
@@ -129,7 +142,7 @@ def sanitize(name):
 def main():
     cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
     canvas = CanvasClient(os.environ["CANVAS_BASE_URL"], os.environ["CANVAS_TOKEN"], cfg)
-    drive = Drive(os.environ[cfg["drive"]["root_folder_id_env"]])
+    drive = Drive(os.environ.get(cfg["drive"]["root_folder_id_env"], ""))
 
     state_path = cfg["state"]["file"]
     state = load_state(state_path)
