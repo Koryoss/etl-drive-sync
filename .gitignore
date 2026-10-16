@@ -1,0 +1,21 @@
+# 비밀값
+.env
+*.pem
+token*.json
+credentials*.json
+
+# 강의자료는 저작권 때문에 레포에 올리지 않습니다
+downloads/
+*.pdf
+*.ppt
+*.pptx
+*.doc
+*.docx
+*.hwp
+*.hwpx
+*.xls
+*.xlsx
+*.zip
+
+__pycache__/
+.venv/

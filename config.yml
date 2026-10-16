@@ -1,0 +1,37 @@
+# etl-drive-sync 설정 파일
+# 기본값은 학교 서버 부하를 최소화하도록 보수적으로 잡혀 있습니다.
+# 값을 공격적으로 올리지 마세요.
+
+# --- 범위 ---
+courses:
+  # 비워두면 이번 학기 활성 수강 과목 전체. 특정 과목만 받으려면 과목 ID를 적으세요.
+  # 예: whitelist: [12345, 67890]
+  whitelist: []
+  only_active: true            # enrollment_state=active 과목만
+
+files:
+  allowed_extensions: [pdf, ppt, pptx, doc, docx, hwp, hwpx, xls, xlsx, txt, md, zip]
+  max_file_size_mb: 50         # 이보다 큰 파일(영상 등)은 건너뜀
+  first_run_lookback_weeks: 4  # 첫 실행 시 최근 N주 안에 수정된 파일만 받음 (0이면 제한 없음)
+
+# --- 호출 방식 ---
+api:
+  per_page: 100
+  request_delay_sec: 1.0       # 요청 사이 대기 시간
+  min_rate_limit_remaining: 200  # X-Rate-Limit-Remaining이 이 값 아래면 중단
+  max_retries: 3               # 실패 시 재시도 횟수 (1초, 2초, 4초 간격)
+  timeout_sec: 30
+
+# --- 안전장치 (1회 실행당 상한) ---
+limits:
+  max_api_calls_per_run: 300
+  max_files_per_run: 40
+
+# --- 저장 ---
+drive:
+  # 구글 드라이브 안에 이 폴더(ID)를 만들어두고 그 안에 과목별 하위 폴더로 저장합니다.
+  # 폴더 ID는 드라이브에서 폴더를 열었을 때 주소창 마지막 부분입니다.
+  root_folder_id_env: DRIVE_ROOT_FOLDER_ID
+
+state:
+  file: state/synced.json      # 이미 받은 파일 기록 (파일 ID -> updated_at)
